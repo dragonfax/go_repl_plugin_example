@@ -60,13 +60,15 @@ const CodeTemplate = `
 
 	func Cmd(locals map[string]interface{}) { 
 
-		// import locals
+		// Include locals
+		// l := locals["l"].(<type>)
 		%s
 
 		// Command
 		%s
 
-		// export new and modified local values
+		// Export new and modified local values
+		// locals["l"] = l
 		%s
 	}
 `
@@ -87,7 +89,7 @@ func applyCodeTemplate(imports []string, stmt string, vname string, addLocals bo
 	return fmt.Sprintf(CodeTemplate, strings.Join(imports, "\n"), strings.Join(localIncludes, "\n"), stmt, strings.Join(localExports, "\n"))
 }
 
-func runCmd() {
+func getNextCommand() string {
 
 	commandString, err := readLine()
 	if err != nil {
@@ -104,13 +106,42 @@ func runCmd() {
 		os.Exit(0)
 	}
 
+	return commandString
+}
+
+func openPlugin(binTempFilename string) func(map[string]interface{}) {
+	p, err := plugin.Open(binTempFilename)
+	if err != nil {
+		panic("Failed to open generated plugin file, '" + binTempFilename + "': " + err.Error())
+	}
+	cmd, err := p.Lookup("Cmd")
+	if err != nil {
+		panic("Couldn't find symbol Cmd: " + err.Error())
+	}
+	return cmd.(func(map[string]interface{}))
+}
+
+func buildCommand(binTempFilename string, goTempFilename string) bool {
+	sh := exec.Command("go", "build", "-buildmode=plugin", "-o", binTempFilename, goTempFilename)
+	sh.Stdout = NewPrefixLineWriter("#### ", os.Stdout)
+	sh.Stderr = NewPrefixLineWriter("#### ", os.Stderr)
+	err := sh.Run()
+	if err != nil {
+		fmt.Println("Build command failed: " + err.Error())
+		return false
+	}
+	return true
+}
+
+func generateCode(commandString string) string {
+
 	// Parse to find any created variable
 	code := applyCodeTemplate([]string{}, commandString, "", false)
 	var fset token.FileSet
 	tree, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
 		fmt.Println("Error parsing input: " + err.Error())
-		return
+		return ""
 	}
 
 	// find created variable.
@@ -126,7 +157,7 @@ func runCmd() {
 	tree, err = parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
 		fmt.Println("Error parsing input: " + err.Error())
-		return
+		return ""
 	}
 
 	// Add unresolved identiers, assume they are imports
@@ -142,8 +173,10 @@ func runCmd() {
 	}
 
 	// final code generation for build
-	code = applyCodeTemplate(imports, commandString, vname, true)
+	return applyCodeTemplate(imports, commandString, vname, true)
+}
 
+func saveGoCode(code string) (binFile string, goFile string) {
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
 	os.Remove(tempFile.Name())
@@ -153,37 +186,33 @@ func runCmd() {
 	if err != nil {
 		panic("Failed to create temp file: " + err.Error())
 	}
-	defer os.Remove(goTempFile.Name())
 
 	goTempFile.WriteString(code)
 	goTempFile.Close()
 
-	binTempFile, err := ioutil.TempFile("", "replbin")
-	if err != nil {
-		panic("Failed to create temp file: " + err.Error())
-	}
-	binTempFile.Close()
-	defer os.Remove(binTempFile.Name())
+	return tempFile.Name(), goTempFile.Name()
+}
 
-	sh := exec.Command("go", "build", "-buildmode=plugin", "-o", binTempFile.Name(), goTempFile.Name())
-	sh.Stdout = NewPrefixLineWriter("#### ", os.Stdout)
-	sh.Stderr = NewPrefixLineWriter("#### ", os.Stderr)
-	err = sh.Run()
-	if err != nil {
-		fmt.Println("Build command failed: " + err.Error())
+func runCmd() {
+
+	commandString := getNextCommand()
+	defer fmt.Println("")
+
+	code := generateCode(commandString)
+	if code == "" {
 		return
 	}
 
-	p, err := plugin.Open(binTempFile.Name())
-	if err != nil {
-		panic("Failed to open generated plugin file, '" + binTempFile.Name() + "': " + err.Error())
-	}
-	cmd, err := p.Lookup("Cmd")
-	if err != nil {
-		panic("Couldn't find symbol Cmd: " + err.Error())
+	binTempFilename, goTempFilename := saveGoCode(code)
+	defer os.Remove(goTempFilename)
+	defer os.Remove(binTempFilename)
+
+	if !buildCommand(binTempFilename, goTempFilename) {
+		return
 	}
 
-	cmd.(func(map[string]interface{}))(localVars)
+	cmd := openPlugin(binTempFilename)
+	cmd(localVars)
 }
 
 var localVars map[string]interface{}
@@ -193,6 +222,5 @@ func main() {
 
 	for {
 		runCmd()
-		fmt.Println("")
 	}
 }
