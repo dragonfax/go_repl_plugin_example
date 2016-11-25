@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go/ast"
 	"bufio"
 	"fmt"
 	"io"
@@ -57,10 +58,22 @@ const CodeTemplate = `
 	// imports
 	%s
 
-	func Cmd() { 
+	func Cmd() (string,interface{}) { 
 		%s
+
+		return "%s",%s
 	}
 `
+
+func applyCodeTemplate(imports []string, stmt string, vname string) string {
+	vval := "nil"
+	if vname != "" {
+		vval = vname
+	}
+
+	code := fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), stmt, vname, vval)
+	return code
+}
 
 func runCmd() {
 
@@ -80,21 +93,32 @@ func runCmd() {
 	}
 
 	imports := make([]string, 0, 1)
-	code := fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), commandString)
+	code := applyCodeTemplate(imports,commandString,"")
 	var fset token.FileSet
-	ast, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
+	tree, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
 		fmt.Println("Error parsing input: " + err.Error())
 		return
 	}
 
 	// Add unresolved identiers, assume they are imports
-	if ast.Unresolved != nil {
-		for _, id := range ast.Unresolved {
+	if tree.Unresolved != nil {
+		for _, id := range tree.Unresolved {
+			if id.Name == "string" || id.Name == "nil" {
+				continue
+			}
 			imports = append(imports, fmt.Sprintf("import \"%s\"",id.Name))
 		}
 	}
-	code = fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), commandString)
+	code = applyCodeTemplate(imports,commandString,"")
+
+	// find created variable.
+	stmt := tree.Decls[0].(*ast.FuncDecl).Body.List[0]
+	astmt, ok := stmt.(*ast.AssignStmt)
+	if ok {
+		vname := astmt.Lhs[0].(*ast.Ident).Name
+		code = applyCodeTemplate(imports,commandString,vname)
+	}
 
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
@@ -135,7 +159,9 @@ func runCmd() {
 		panic("Couldn't find symbol Cmd: " + err.Error())
 	}
 
-	cmd.(func())()
+	str, val := cmd.(func()(string, interface{}))()
+	if str != "" {
+	}
 }
 
 func main() {
