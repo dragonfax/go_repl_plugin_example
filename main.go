@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"plugin"
+	"go/parser"
+	"go/token"
+	"strings"
 )
 
 func readLine() (string, error) {
@@ -48,18 +51,14 @@ func (w *PrefixLineWriter) Write(buf []byte) (n int, err error) {
 	return w.Child.Write(buf)
 }
 
-const BoilerPlatePrologue = `
-		
+const CodeTemplate = `
 	package main
 
-	import "fmt"
+	// imports
+	%s
 
-	func Cmd() error { 
-
-`
-const BoilerPlateEpilogue = `
-
-		return nil
+	func Cmd() { 
+		%s
 	}
 `
 
@@ -80,6 +79,22 @@ func runCmd() {
 		os.Exit(0)
 	}
 
+	imports := make([]string, 0, 1)
+	code := fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), commandString)
+	var fset token.FileSet
+	ast, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
+	if err != nil {
+		fmt.Println("Error parsing input: " + err.Error())
+		return
+	}
+
+	// Add unresolved identiers, assume they are imports
+	if ast.Unresolved != nil {
+		for _, id := range ast.Unresolved {
+			imports = append(imports, fmt.Sprintf("import \"%s\"",id.Name))
+		}
+	}
+	code = fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), commandString)
 
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
@@ -88,43 +103,39 @@ func runCmd() {
 	// the file must have a .go extension to be compiled with an absolute path.
 	goTempFile, err := os.Create(tempFile.Name() + ".go")
 	if err != nil {
-		panic("failed to create temp file: " + err.Error())
+		panic("Failed to create temp file: " + err.Error())
 	}
 	defer os.Remove(goTempFile.Name())
 
-	code := BoilerPlatePrologue + commandString + BoilerPlateEpilogue
 	goTempFile.WriteString(code)
 	goTempFile.Close()
 
 	binTempFile, err := ioutil.TempFile("", "replbin")
 	if err != nil {
-		panic("failed to create temp file: " + err.Error())
+		panic("Failed to create temp file: " + err.Error())
 	}
 	binTempFile.Close()
 	defer os.Remove(binTempFile.Name())
 
 	sh := exec.Command("go", "build", "-buildmode=plugin", "-o", binTempFile.Name(), goTempFile.Name())
-	sh.Stdout = NewPrefixLineWriter("internal: ", os.Stdout)
-	sh.Stderr = NewPrefixLineWriter("internal: ", os.Stderr)
+	sh.Stdout = NewPrefixLineWriter("#### ", os.Stdout)
+	sh.Stderr = NewPrefixLineWriter("#### ", os.Stderr)
 	err = sh.Run()
 	if err != nil {
-		fmt.Println("build command failed: " + err.Error())
+		fmt.Println("Build command failed: " + err.Error())
 		return
 	}
 
 	p, err := plugin.Open(binTempFile.Name())
 	if err != nil {
-		panic("failed to open generated plugin file, '" + binTempFile.Name() + "': " + err.Error())
+		panic("Failed to open generated plugin file, '" + binTempFile.Name() + "': " + err.Error())
 	}
 	cmd, err := p.Lookup("Cmd")
 	if err != nil {
-		panic("couldn't find symbol Cmd: " + err.Error())
+		panic("Couldn't find symbol Cmd: " + err.Error())
 	}
 
-	err = cmd.(func() error)()
-	if err != nil {
-		fmt.Println("An error was returned: " + err.Error())
-	}
+	cmd.(func())()
 }
 
 func main() {
