@@ -1,16 +1,16 @@
 package main
 
 import (
-	"go/ast"
 	"bufio"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"plugin"
-	"go/parser"
-	"go/token"
 	"strings"
 )
 
@@ -38,7 +38,7 @@ func insertIntoByteArray(buf []byte, i int, b []byte) []byte {
 func (w *PrefixLineWriter) Write(buf []byte) (n int, err error) {
 
 	if w.firstWrite {
-		buf = insertIntoByteArray(buf,0,w.Prefix)
+		buf = insertIntoByteArray(buf, 0, w.Prefix)
 		w.firstWrite = false
 	}
 
@@ -73,10 +73,10 @@ const CodeTemplate = `
 
 func applyCodeTemplate(imports []string, stmt string, vname string, addLocals bool) string {
 	localIncludes := make([]string, 0, len(localVars))
-	localExports := make([]string,0,len(localVars))
+	localExports := make([]string, 0, len(localVars))
 	if addLocals {
 		for v, val := range localVars {
-			localIncludes = append(localIncludes, fmt.Sprintf("%s := locals[\"%s\"].(%T)",v, v, val))
+			localIncludes = append(localIncludes, fmt.Sprintf("%s := locals[\"%s\"].(%T)", v, v, val))
 			localExports = append(localExports, fmt.Sprintf("locals[\"%s\"] = %s", v, v))
 		}
 		if vname != "" {
@@ -84,7 +84,7 @@ func applyCodeTemplate(imports []string, stmt string, vname string, addLocals bo
 		}
 	}
 
-	return fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), strings.Join(localIncludes,"\n"), stmt, strings.Join(localExports,"\n"))
+	return fmt.Sprintf(CodeTemplate, strings.Join(imports, "\n"), strings.Join(localIncludes, "\n"), stmt, strings.Join(localExports, "\n"))
 }
 
 func runCmd() {
@@ -104,9 +104,8 @@ func runCmd() {
 		os.Exit(0)
 	}
 
-
 	// Parse to find any created variable
-	code := applyCodeTemplate([]string{},commandString,"", false)
+	code := applyCodeTemplate([]string{}, commandString, "", false)
 	var fset token.FileSet
 	tree, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
@@ -123,7 +122,7 @@ func runCmd() {
 	}
 
 	// Parse to find any unresolved imports
-	code = applyCodeTemplate([]string{},commandString,vname, true)
+	code = applyCodeTemplate([]string{}, commandString, vname, true)
 	tree, err = parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
 		fmt.Println("Error parsing input: " + err.Error())
@@ -138,12 +137,12 @@ func runCmd() {
 			if id.Name == "string" || id.Name == "nil" || id.Name == "int" {
 				continue
 			}
-			imports = append(imports, fmt.Sprintf("import \"%s\"",id.Name))
+			imports = append(imports, fmt.Sprintf("import \"%s\"", id.Name))
 		}
 	}
 
 	// final code generation for build
-	code = applyCodeTemplate(imports,commandString,vname, true)
+	code = applyCodeTemplate(imports, commandString, vname, true)
 
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
@@ -187,14 +186,7 @@ func runCmd() {
 	cmd.(func(map[string]interface{}))(localVars)
 }
 
-func mergeMaps(old map[string]interface{}, new map[string]interface{}) {
-	for key, val := range new {
-		old[key] = val
-	}
-}
-
 var localVars map[string]interface{}
-
 
 func main() {
 	localVars = make(map[string]interface{})
