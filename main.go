@@ -10,11 +10,10 @@ import (
 	"plugin"
 )
 
-func readLine() string {
+func readLine() (string, error) {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Enter text: ")
-	text, _ := reader.ReadString('\n')
-	return text
+	return reader.ReadString('\n')
 }
 
 type PrefixLineWriter struct {
@@ -27,87 +26,110 @@ func NewPrefixLineWriter(p string, c io.Writer) *PrefixLineWriter {
 	return &PrefixLineWriter{[]byte(p), c, true}
 }
 
-// FIXME: returns length including prefix.
+func insertIntoByteArray(buf []byte, i int, b []byte) []byte {
+	return append(buf[:i+1], append(b, buf[i+1:]...)...)
+}
+
+// FIXME: returns length written including prefixes preappended to lines.
 func (w *PrefixLineWriter) Write(buf []byte) (n int, err error) {
-	var tn int
+
 	if w.firstWrite {
-		n, err := w.Child.Write(w.Prefix)
+		buf = insertIntoByteArray(buf,0,w.Prefix)
 		w.firstWrite = false
-		tn += n
-		if err != nil {
-			return n, err
-		}
 	}
-	for _, b := range buf {
-		n, err := w.Child.Write([]byte{b})
-		tn += n
-		if err != nil {
-			return tn, err
-		}
 
+	// scan the buf for newlines, append the prefix to any we find.
+	for i, b := range buf {
 		if b == '\n' {
-			n, err := w.Child.Write(w.Prefix)
-			tn += n
-			if err != nil {
-				return tn, err
-			}
+			buf = insertIntoByteArray(buf, i, w.Prefix)
 		}
 	}
 
-	return tn, nil
+	return w.Child.Write(buf)
 }
 
-func main() {
+const BoilerPlatePrologue = `
+		
+	package main
 
-	commandString := readLine()
+	import "fmt"
 
-	boilerplate := `
-	
-package main
+	func Cmd() error { 
 
-import "fmt"
-
-func Cmd() error { 
-` +
-		commandString + `
-	return nil
-}
 `
+const BoilerPlateEpilogue = `
+
+		return nil
+	}
+`
+
+func runCmd() {
+
+	commandString, err := readLine()
+	if err != nil {
+		if err == io.EOF {
+			fmt.Println("Exiting REPL")
+			os.Exit(0)
+		} else {
+			os.Stderr.WriteString("Incomplete line read.")
+			os.Exit(1)
+		}
+	}
+	if commandString == "\n" {
+		fmt.Println("Exiting REPL")
+		os.Exit(0)
+	}
+
 
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
+	os.Remove(tempFile.Name())
+
+	// the file must have a .go extension to be compiled with an absolute path.
 	goTempFile, err := os.Create(tempFile.Name() + ".go")
 	if err != nil {
-		fmt.Println("failed to create go temp file")
-		panic(err)
+		panic("failed to create temp file: " + err.Error())
 	}
+	defer os.Remove(goTempFile.Name())
 
-	goTempFile.WriteString(boilerplate)
+	code := BoilerPlatePrologue + commandString + BoilerPlateEpilogue
+	goTempFile.WriteString(code)
 	goTempFile.Close()
 
-	binTempFile, _ := ioutil.TempFile("", "replcmd")
+	binTempFile, err := ioutil.TempFile("", "replbin")
+	if err != nil {
+		panic("failed to create temp file: " + err.Error())
+	}
 	binTempFile.Close()
+	defer os.Remove(binTempFile.Name())
 
 	sh := exec.Command("go", "build", "-buildmode=plugin", "-o", binTempFile.Name(), goTempFile.Name())
 	sh.Stdout = NewPrefixLineWriter("internal: ", os.Stdout)
 	sh.Stderr = NewPrefixLineWriter("internal: ", os.Stderr)
 	err = sh.Run()
 	if err != nil {
-		fmt.Println("command failed ")
-		panic(err)
+		fmt.Println("build command failed: " + err.Error())
+		return
 	}
 
 	p, err := plugin.Open(binTempFile.Name())
 	if err != nil {
-		fmt.Println("failed to open plugin " + binTempFile.Name())
-		panic(err)
+		panic("failed to open generated plugin file, '" + binTempFile.Name() + "': " + err.Error())
 	}
 	cmd, err := p.Lookup("Cmd")
 	if err != nil {
-		fmt.Println("couldn't find symbol Cmd")
-		panic(err)
+		panic("couldn't find symbol Cmd: " + err.Error())
 	}
 
 	err = cmd.(func() error)()
-	fmt.Println(err)
+	if err != nil {
+		fmt.Println("An error was returned: " + err.Error())
+	}
+}
+
+func main() {
+	for {
+		runCmd()
+		fmt.Println("")
+	}
 }
