@@ -58,21 +58,33 @@ const CodeTemplate = `
 	// imports
 	%s
 
-	func Cmd() (string,interface{}) { 
+	func Cmd(locals map[string]interface{}) { 
+
+		// import locals
 		%s
 
-		return "%s",%s
+		// Command
+		%s
+
+		// export new and modified local values
+		%s
 	}
 `
 
-func applyCodeTemplate(imports []string, stmt string, vname string) string {
-	vval := "nil"
-	if vname != "" {
-		vval = vname
+func applyCodeTemplate(imports []string, stmt string, vname string, addLocals bool) string {
+	localIncludes := make([]string, 0, len(localVars))
+	localExports := make([]string,0,len(localVars))
+	if addLocals {
+		for v, val := range localVars {
+			localIncludes = append(localIncludes, fmt.Sprintf("%s := locals[\"%s\"].(%T)",v, v, val))
+			localExports = append(localExports, fmt.Sprintf("locals[\"%s\"] = %s", v, v))
+		}
+		if vname != "" {
+			localExports = append(localExports, fmt.Sprintf("locals[\"%s\"] = %s", vname, vname))
+		}
 	}
 
-	code := fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), stmt, vname, vval)
-	return code
+	return fmt.Sprintf(CodeTemplate, strings.Join(imports,"\n"), strings.Join(localIncludes,"\n"), stmt, strings.Join(localExports,"\n"))
 }
 
 func runCmd() {
@@ -92,8 +104,9 @@ func runCmd() {
 		os.Exit(0)
 	}
 
-	imports := make([]string, 0, 1)
-	code := applyCodeTemplate(imports,commandString,"")
+
+	// Parse to find any created variable
+	code := applyCodeTemplate([]string{},commandString,"", false)
 	var fset token.FileSet
 	tree, err := parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
 	if err != nil {
@@ -101,24 +114,36 @@ func runCmd() {
 		return
 	}
 
+	// find created variable.
+	stmt := tree.Decls[0].(*ast.FuncDecl).Body.List[0]
+	astmt, ok := stmt.(*ast.AssignStmt)
+	vname := ""
+	if ok {
+		vname = astmt.Lhs[0].(*ast.Ident).Name
+	}
+
+	// Parse to find any unresolved imports
+	code = applyCodeTemplate([]string{},commandString,vname, true)
+	tree, err = parser.ParseFile(&fset, "console", code, parser.DeclarationErrors)
+	if err != nil {
+		fmt.Println("Error parsing input: " + err.Error())
+		return
+	}
+
 	// Add unresolved identiers, assume they are imports
+	imports := make([]string, 0, 1)
 	if tree.Unresolved != nil {
 		for _, id := range tree.Unresolved {
-			if id.Name == "string" || id.Name == "nil" {
+			// my lazy resolver (ignore some known types)
+			if id.Name == "string" || id.Name == "nil" || id.Name == "int" {
 				continue
 			}
 			imports = append(imports, fmt.Sprintf("import \"%s\"",id.Name))
 		}
 	}
-	code = applyCodeTemplate(imports,commandString,"")
 
-	// find created variable.
-	stmt := tree.Decls[0].(*ast.FuncDecl).Body.List[0]
-	astmt, ok := stmt.(*ast.AssignStmt)
-	if ok {
-		vname := astmt.Lhs[0].(*ast.Ident).Name
-		code = applyCodeTemplate(imports,commandString,vname)
-	}
+	// final code generation for build
+	code = applyCodeTemplate(imports,commandString,vname, true)
 
 	tempFile, _ := ioutil.TempFile("", "repl")
 	tempFile.Close()
@@ -159,12 +184,21 @@ func runCmd() {
 		panic("Couldn't find symbol Cmd: " + err.Error())
 	}
 
-	str, val := cmd.(func()(string, interface{}))()
-	if str != "" {
+	cmd.(func(map[string]interface{}))(localVars)
+}
+
+func mergeMaps(old map[string]interface{}, new map[string]interface{}) {
+	for key, val := range new {
+		old[key] = val
 	}
 }
 
+var localVars map[string]interface{}
+
+
 func main() {
+	localVars = make(map[string]interface{})
+
 	for {
 		runCmd()
 		fmt.Println("")
