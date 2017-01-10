@@ -5,11 +5,11 @@ A simple example of using the new Go 1.8 plugin system to implement a Go REPL.
 
 ### What it Does
 
-With this technique, there is only ever one Go process. The code you type is compiled live, and then loaded into the existing go process, as a shared library.
+With this technique, there is only ever one Go process. The code you type is compiled live, and then loaded into the existing go process, as a Golang Plugin (like a shared library).
 
 Then its executed within the memoryspace of that single go process. No child processes are created, no RPC is done, no code is interpreted. 
 
-Local variables are captured and available each new command you type.
+Local variables are captured and available each new command you type. The command-plugin generation step includes them via some simple boilerplate templating. And they're current values are passed into the plugin by reference.
 
 ### How To
 
